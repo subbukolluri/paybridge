@@ -127,10 +127,13 @@ services:
     environment:
       - PaymentApi__WebhookUrl=http://payment-api:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+      - Loki__Url=http://loki:3100
     depends_on:
       payment-api:
         condition: service_started
       tempo:
+        condition: service_started
+      loki:
         condition: service_started
 
   fraud-service:
@@ -143,6 +146,28 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
       - Loki__Url=http://loki:3100
     depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+
+  settlement-consumer:
+    build:
+      context: .
+      dockerfile: src/PayBridge.SettlementConsumer/Dockerfile
+    environment:
+      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=PayBridge;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Port=5672
+      - RabbitMQ__UserName=guest
+      - RabbitMQ__Password=guest
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+      - Loki__Url=http://loki:3100
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
       tempo:
         condition: service_started
       loki:
