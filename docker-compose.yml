@@ -31,6 +31,16 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Observability (Grafana Stack) ──────────────────────────────────────────
 
   tempo:
@@ -99,6 +109,7 @@ services:
       - "5000:8080"
     environment:
       - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=PayBridge;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True
+      - ConnectionStrings__Redis=redis:6379
       - ConnectionStrings__RabbitMQ=amqp://guest:guest@rabbitmq:5672
       - RabbitMQ__Host=rabbitmq
       - RabbitMQ__Port=5672
@@ -110,6 +121,8 @@ services:
       sqlserver:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       fraud-service:
         condition: service_started

@@ -15,6 +15,7 @@ public class PaymentOrchestrator
 {
     private readonly IPaymentRepository _repository;
     private readonly PayBridgeDbContext _db;
+    private readonly IIdempotencyService _idempotencyService;
     private readonly IFraudClient _fraudClient;
     private readonly IProviderClient _providerClient;
     private readonly PaymentMetrics _metrics;
@@ -23,6 +24,7 @@ public class PaymentOrchestrator
     public PaymentOrchestrator(
         IPaymentRepository repository,
         PayBridgeDbContext db,
+        IIdempotencyService idempotencyService,
         IFraudClient fraudClient,
         IProviderClient providerClient,
         PaymentMetrics metrics,
@@ -30,6 +32,7 @@ public class PaymentOrchestrator
     {
         _repository = repository;
         _db = db;
+        _idempotencyService = idempotencyService;
         _fraudClient = fraudClient;
         _providerClient = providerClient;
         _metrics = metrics;
@@ -47,6 +50,23 @@ public class PaymentOrchestrator
         activity?.SetTag("payment.currency", request.Currency);
         activity?.SetTag("payment.method", request.Method.ToString());
 
+        // ── Step 1: Idempotency check (Redis fast path) ─────────────────────
+        var existingId = await _idempotencyService.TryGetExistingPaymentAsync(
+            request.MerchantId, request.IdempotencyKey, ct);
+
+        if (existingId.HasValue)
+        {
+            var existing = await _repository.GetByIdAsync(existingId.Value, ct);
+            if (existing != null)
+            {
+                _appLogger.LogInformation(
+                    "Returning existing payment {PaymentId} for idempotency key",
+                    null, existing.Id);
+                return ToResponse(existing);
+            }
+        }
+
+        // ── Step 2: Create payment (DB-first for idempotency enforcement) ───
         var payment = new Payment
         {
             Id = Guid.NewGuid(),
@@ -76,6 +96,8 @@ public class PaymentOrchestrator
                 request.MerchantId, request.IdempotencyKey, ct);
             return ToResponse(existing!);
         }
+
+        await _idempotencyService.SetAsync(request.MerchantId, request.IdempotencyKey, payment.Id, ct);
 
         // ── Fraud check ──────────────────────────────────────────────────────
         payment.TransitionTo(PaymentStatus.FraudChecking);

@@ -41,8 +41,6 @@ builder.Services.AddSingleton<IConnection>(_ =>
         Port = int.TryParse(builder.Configuration["RabbitMQ:Port"], out var port) ? port : 5672,
         UserName = builder.Configuration["RabbitMQ:UserName"] ?? "guest",
         Password = builder.Configuration["RabbitMQ:Password"] ?? "guest",
-
-        // DispatchConsumersAsync = true,          // REQUIRED
         AutomaticRecoveryEnabled = true
     };
 

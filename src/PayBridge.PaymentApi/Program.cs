@@ -10,6 +10,7 @@ using PayBridge.Logging;
 using PayBridge.PaymentApi.Telemetry;
 using RabbitMQ.Client;
 using Serilog;
+using StackExchange.Redis;
 using Serilog.Formatting.Compact;
 using Serilog.Sinks.Grafana.Loki;
 
@@ -48,16 +49,18 @@ builder.Services.AddHttpClient<IProviderClient, ProviderClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(5);
 });
 
+// ── Redis ────────────────────────────────────────────────────────────────────
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379"));
+
 // ── RabbitMQ ──────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IConnection>(sp =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
-
     var host = config["RabbitMQ:Host"] ?? "localhost";
     var port = int.TryParse(config["RabbitMQ:Port"], out var p) ? p : 5672;
     var userName = config["RabbitMQ:UserName"] ?? "guest";
     var password = config["RabbitMQ:Password"] ?? "guest";
-
     var factory = new ConnectionFactory
     {
         HostName = host,
@@ -65,8 +68,6 @@ builder.Services.AddSingleton<IConnection>(sp =>
         UserName = userName,
         Password = password
     };
-
-    // v7 async API
     return factory.CreateConnectionAsync().GetAwaiter().GetResult();
 });
 
@@ -77,6 +78,7 @@ builder.Services.AddPayBridgeLogging(builder.Configuration);
 builder.Services.AddSingleton<PaymentMetrics>();
 builder.Services.AddSingleton<IEventPublisher, RabbitMqEventPublisher>();
 builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
+builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
 builder.Services.AddScoped<IFraudClient, FraudClient>();
 builder.Services.AddScoped<PaymentOrchestrator>();
 builder.Services.AddHostedService<OutboxProcessor>();
@@ -106,6 +108,10 @@ builder.Services.AddHealthChecks()
         builder.Configuration.GetConnectionString("DefaultConnection") ?? "",
         name: "sqlserver",
         tags: new[] { "critical", "ready" })
+    .AddRedis(
+        builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379",
+        name: "redis",
+        tags: new[] { "important", "ready" })
     .AddCheck<RabbitMQHealthCheck>("rabbitmq", tags: new[] { "critical", "ready" });
 
 builder.Services.AddControllers();
