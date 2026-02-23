@@ -8,6 +8,7 @@ using PayBridge.PaymentApi.Infrastructure;
 using PayBridge.PaymentApi.Services;
 using PayBridge.Logging;
 using PayBridge.PaymentApi.Telemetry;
+using Polly;
 using RabbitMQ.Client;
 using Serilog;
 using StackExchange.Redis;
@@ -53,22 +54,26 @@ builder.Services.AddHttpClient<IProviderClient, ProviderClient>(client =>
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379"));
 
-// ── RabbitMQ ──────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<IConnection>(sp =>
+// ── RabbitMQ (Polly retry on connection refused at startup) ───────────────────
+builder.Services.AddSingleton<IConnection>(_ =>
 {
-    var config = sp.GetRequiredService<IConfiguration>();
-    var host = config["RabbitMQ:Host"] ?? "localhost";
-    var port = int.TryParse(config["RabbitMQ:Port"], out var p) ? p : 5672;
-    var userName = config["RabbitMQ:UserName"] ?? "guest";
-    var password = config["RabbitMQ:Password"] ?? "guest";
     var factory = new ConnectionFactory
     {
-        HostName = host,
-        Port = port,
-        UserName = userName,
-        Password = password
+        HostName = builder.Configuration["RabbitMQ:Host"] ?? "localhost",
+        Port = int.TryParse(builder.Configuration["RabbitMQ:Port"], out var port) ? port : 5672,
+        UserName = builder.Configuration["RabbitMQ:UserName"] ?? "guest",
+        Password = builder.Configuration["RabbitMQ:Password"] ?? "guest"
     };
-    return factory.CreateConnectionAsync().GetAwaiter().GetResult();
+    const int maxRetries = 10;
+    var policy = Policy
+        .Handle<Exception>()
+        .WaitAndRetry(
+            maxRetries,
+            attempt => TimeSpan.FromSeconds(attempt * 2),
+            onRetry: (ex, delay, attempt, _) =>
+                Log.Warning(ex, "RabbitMQ connection attempt {Attempt}/{Max} failed, retrying in {Delay}s…",
+                    attempt, maxRetries, delay.TotalSeconds));
+    return policy.Execute(() => factory.CreateConnectionAsync().GetAwaiter().GetResult());
 });
 
 // ── Logging ──────────────────────────────────────────────────────────────────

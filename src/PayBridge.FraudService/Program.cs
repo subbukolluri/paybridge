@@ -14,6 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 var lokiUrl = builder.Configuration["Loki:Url"] ?? "http://localhost:3100";
 
 Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .Enrich.WithProperty("Service", ServiceName)
     .WriteTo.Console(new CompactJsonFormatter())

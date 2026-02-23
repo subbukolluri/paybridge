@@ -3,6 +3,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using PayBridge.SettlementConsumer.Infrastructure;
 using PayBridge.SettlementConsumer.Workers;
+using Polly;
 using RabbitMQ.Client;
 using Serilog;
 using Serilog.Formatting.Compact;
@@ -32,7 +33,7 @@ builder.Services.AddSerilog();
 builder.Services.AddDbContext<SettlementDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// ── RabbitMQ ─────────────────────────────────────────────────────────────────
+// ── RabbitMQ (Polly retry on connection refused at startup) ───────────────────
 builder.Services.AddSingleton<IConnection>(_ =>
 {
     var factory = new ConnectionFactory
@@ -40,11 +41,18 @@ builder.Services.AddSingleton<IConnection>(_ =>
         HostName = builder.Configuration["RabbitMQ:Host"] ?? "localhost",
         Port = int.TryParse(builder.Configuration["RabbitMQ:Port"], out var port) ? port : 5672,
         UserName = builder.Configuration["RabbitMQ:UserName"] ?? "guest",
-        Password = builder.Configuration["RabbitMQ:Password"] ?? "guest",
-        AutomaticRecoveryEnabled = true
+        Password = builder.Configuration["RabbitMQ:Password"] ?? "guest"
     };
-
-    return factory.CreateConnectionAsync().GetAwaiter().GetResult();
+    const int maxRetries = 10;
+    var policy = Policy
+        .Handle<Exception>()
+        .WaitAndRetry(
+            maxRetries,
+            attempt => TimeSpan.FromSeconds(attempt * 2),
+            onRetry: (ex, delay, attempt, _) =>
+                Log.Warning(ex, "RabbitMQ connection attempt {Attempt}/{Max} failed, retrying in {Delay}s…",
+                    attempt, maxRetries, delay.TotalSeconds));
+    return policy.Execute(() => factory.CreateConnectionAsync().GetAwaiter().GetResult());
 });
 
 // ── OpenTelemetry ────────────────────────────────────────────────────────────
