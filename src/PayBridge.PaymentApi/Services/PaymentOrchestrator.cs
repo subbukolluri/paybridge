@@ -139,6 +139,11 @@ public class PaymentOrchestrator
         catch (Exception ex)
         {
             _appLogger.LogError(ex, "Provider call failed for payment {PaymentId}", null, payment.Id);
+            payment.TransitionTo(PaymentStatus.Failed);
+            payment.FailureReason = "Provider call failed";
+            EnqueueOutboxMessage(payment, "PaymentFailed");
+            await _repository.UpdateAsync(payment, ct);
+            return ToResponse(payment);
         }
 
         EnqueueOutboxMessage(payment, "PaymentInitiated");
