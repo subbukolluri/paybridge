@@ -12,17 +12,20 @@ public class PaymentOrchestrator
 {
     private readonly IPaymentRepository _repository;
     private readonly IFraudClient _fraudClient;
+    private readonly IProviderClient _providerClient;
     private readonly PaymentMetrics _metrics;
     private readonly IAppLogger _appLogger;
 
     public PaymentOrchestrator(
         IPaymentRepository repository,
         IFraudClient fraudClient,
+        IProviderClient providerClient,
         PaymentMetrics metrics,
         IAppLogger appLogger)
     {
         _repository = repository;
         _fraudClient = fraudClient;
+        _providerClient = providerClient;
         _metrics = metrics;
         _appLogger = appLogger;
     }
@@ -103,8 +106,32 @@ public class PaymentOrchestrator
             return ToResponse(payment);
         }
 
-        // ── Fraud approved — mark as submitted (provider integration comes next)
+        // ── Submit to provider ─────────────────────────────────────────────────
         payment.TransitionTo(PaymentStatus.Submitted);
+        await _repository.UpdateAsync(payment, ct);
+
+        try
+        {
+            var providerResult = await _providerClient.SubmitPaymentAsync(
+                payment.Id, request.MerchantId, request.Amount,
+                request.Currency, request.Method.ToString(), ct);
+
+            if (providerResult.ProviderTransactionId != null)
+                payment.ProviderTransactionId = providerResult.ProviderTransactionId;
+
+            if (!providerResult.Accepted)
+            {
+                payment.TransitionTo(PaymentStatus.Failed);
+                payment.FailureReason = $"Provider rejected: {providerResult.Error}";
+                await _repository.UpdateAsync(payment, ct);
+                return ToResponse(payment);
+            }
+        }
+        catch (Exception ex)
+        {
+            _appLogger.LogError(ex, "Provider call failed for payment {PaymentId}", null, payment.Id);
+        }
+
         await _repository.UpdateAsync(payment, ct);
 
         sw.Stop();
@@ -115,6 +142,80 @@ public class PaymentOrchestrator
             null, payment.Id, payment.Status);
 
         return ToResponse(payment);
+    }
+
+    /// <summary>
+    /// Returns the traceparent stored on the Payment when it was created.
+    /// Used when processing webhooks from third-party providers that do not echo trace context
+    /// — we restore the trace from our DB so the webhook span links to the original payment trace.
+    /// </summary>
+    public async Task<string?> GetStoredTraceParentAsync(Guid paymentId, CancellationToken ct = default)
+    {
+        var payment = await _repository.GetByIdAsync(paymentId, ct);
+        return payment?.TraceParent;
+    }
+
+    public async Task HandleWebhookAsync(string providerTransactionId, string status,
+        string paymentIdStr, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(paymentIdStr, out var paymentId))
+        {
+            _appLogger.LogWarning("Invalid payment ID in webhook: {PaymentId}", null, paymentIdStr);
+            return;
+        }
+
+        var payment = await _repository.GetByIdAsync(paymentId, ct);
+        if (payment == null)
+        {
+            _appLogger.LogWarning("Payment {PaymentId} not found for webhook", null, paymentId);
+            return;
+        }
+
+        if (PaymentStateMachine.IsTerminal(payment.Status) || payment.Status == PaymentStatus.Completed)
+        {
+            _appLogger.LogInformation(
+                "Payment {PaymentId} already in terminal/completed state {Status}, ignoring webhook",
+                null, paymentId, payment.Status);
+            return;
+        }
+
+        payment.ProviderTransactionId = providerTransactionId;
+
+        var newStatus = status.ToUpperInvariant() switch
+        {
+            "SUCCESS" => PaymentStatus.Completed,
+            "FAILED" => PaymentStatus.Failed,
+            _ => (PaymentStatus?)null
+        };
+
+        if (newStatus == null)
+        {
+            _appLogger.LogWarning("Unknown webhook status: {Status}", null, status);
+            return;
+        }
+
+        try
+        {
+            payment.TransitionTo(newStatus.Value);
+        }
+        catch (InvalidOperationException)
+        {
+            _appLogger.LogWarning(
+                "Invalid state transition from webhook for payment {PaymentId}: {From} -> {To}",
+                null, paymentId, payment.Status, newStatus);
+            return;
+        }
+
+        if (newStatus == PaymentStatus.Failed)
+            payment.FailureReason = "Provider reported failure";
+
+        await _repository.UpdateAsync(payment, ct);
+
+        if (newStatus == PaymentStatus.Completed)
+            _metrics.RecordSuccess();
+
+        _appLogger.LogInformation("Webhook processed for payment {PaymentId}: {Status}",
+            null, paymentId, newStatus);
     }
 
     public async Task<PaymentResponse?> GetPaymentAsync(Guid paymentId, CancellationToken ct = default)

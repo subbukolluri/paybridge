@@ -39,6 +39,13 @@ builder.Services.AddGrpcClient<FraudDetectionSvc.FraudDetectionSvcClient>(o =>
     o.Address = new Uri(builder.Configuration["FraudService:Url"] ?? "http://localhost:5001");
 });
 
+// ── HTTP Provider Client ─────────────────────────────────────────────────────
+builder.Services.AddHttpClient<IProviderClient, ProviderClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["ProviderService:Url"] ?? "http://localhost:5002");
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+
 // ── Logging ──────────────────────────────────────────────────────────────────
 builder.Services.AddPayBridgeLogging(builder.Configuration);
 

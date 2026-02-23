@@ -86,6 +86,7 @@ services:
     environment:
       - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=PayBridge;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True
       - FraudService__Url=http://fraud-service:5001
+      - ProviderService__Url=http://provider-service:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
       - Loki__Url=http://loki:3100
     depends_on:
@@ -96,6 +97,21 @@ services:
       tempo:
         condition: service_started
       loki:
+        condition: service_started
+
+  provider-service:
+    build:
+      context: .
+      dockerfile: src/PayBridge.ProviderService/Dockerfile
+    ports:
+      - "5002:8080"
+    environment:
+      - PaymentApi__WebhookUrl=http://payment-api:8080
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+    depends_on:
+      payment-api:
+        condition: service_started
+      tempo:
         condition: service_started
 
   fraud-service:
