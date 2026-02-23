@@ -17,6 +17,20 @@ services:
       retries: 10
       start_period: 30s
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Observability (Grafana Stack) ──────────────────────────────────────────
 
   tempo:
@@ -85,12 +99,17 @@ services:
       - "5000:8080"
     environment:
       - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=PayBridge;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True
+      - ConnectionStrings__RabbitMQ=amqp://guest:guest@rabbitmq:5672
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Port=5672
       - FraudService__Url=http://fraud-service:5001
       - ProviderService__Url=http://provider-service:8080
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
       - Loki__Url=http://loki:3100
     depends_on:
       sqlserver:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       fraud-service:
         condition: service_started

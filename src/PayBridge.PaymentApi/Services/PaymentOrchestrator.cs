@@ -1,9 +1,12 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PayBridge.Contracts.Enums;
+using PayBridge.Contracts.Events;
 using PayBridge.Contracts.Models;
 using PayBridge.Logging;
 using PayBridge.PaymentApi.Domain;
+using PayBridge.PaymentApi.Infrastructure;
 using PayBridge.PaymentApi.Telemetry;
 
 namespace PayBridge.PaymentApi.Services;
@@ -11,6 +14,7 @@ namespace PayBridge.PaymentApi.Services;
 public class PaymentOrchestrator
 {
     private readonly IPaymentRepository _repository;
+    private readonly PayBridgeDbContext _db;
     private readonly IFraudClient _fraudClient;
     private readonly IProviderClient _providerClient;
     private readonly PaymentMetrics _metrics;
@@ -18,12 +22,14 @@ public class PaymentOrchestrator
 
     public PaymentOrchestrator(
         IPaymentRepository repository,
+        PayBridgeDbContext db,
         IFraudClient fraudClient,
         IProviderClient providerClient,
         PaymentMetrics metrics,
         IAppLogger appLogger)
     {
         _repository = repository;
+        _db = db;
         _fraudClient = fraudClient;
         _providerClient = providerClient;
         _metrics = metrics;
@@ -86,6 +92,7 @@ public class PaymentOrchestrator
                 _metrics.RecordFraudRejection();
                 payment.TransitionTo(PaymentStatus.Failed);
                 payment.FailureReason = $"Fraud rejected: {fraudResult.Reason} (score: {fraudResult.RiskScore:F2})";
+                EnqueueOutboxMessage(payment, "PaymentFailed");
                 await _repository.UpdateAsync(payment, ct);
 
                 _appLogger.LogInformation(
@@ -101,6 +108,7 @@ public class PaymentOrchestrator
                 null, payment.Id);
             payment.TransitionTo(PaymentStatus.Failed);
             payment.FailureReason = "Fraud service unavailable";
+            EnqueueOutboxMessage(payment, "PaymentFailed");
             await _repository.UpdateAsync(payment, ct);
 
             return ToResponse(payment);
@@ -123,6 +131,7 @@ public class PaymentOrchestrator
             {
                 payment.TransitionTo(PaymentStatus.Failed);
                 payment.FailureReason = $"Provider rejected: {providerResult.Error}";
+                EnqueueOutboxMessage(payment, "PaymentFailed");
                 await _repository.UpdateAsync(payment, ct);
                 return ToResponse(payment);
             }
@@ -132,6 +141,7 @@ public class PaymentOrchestrator
             _appLogger.LogError(ex, "Provider call failed for payment {PaymentId}", null, payment.Id);
         }
 
+        EnqueueOutboxMessage(payment, "PaymentInitiated");
         await _repository.UpdateAsync(payment, ct);
 
         sw.Stop();
@@ -209,6 +219,8 @@ public class PaymentOrchestrator
         if (newStatus == PaymentStatus.Failed)
             payment.FailureReason = "Provider reported failure";
 
+        var eventType = newStatus == PaymentStatus.Completed ? "PaymentCompleted" : "PaymentFailed";
+        EnqueueOutboxMessage(payment, eventType);
         await _repository.UpdateAsync(payment, ct);
 
         if (newStatus == PaymentStatus.Completed)
@@ -227,6 +239,30 @@ public class PaymentOrchestrator
     private static PaymentResponse ToResponse(Payment p) => new(
         p.Id, p.MerchantId, p.Amount, p.Currency, p.Status,
         p.ProviderTransactionId, p.FailureReason, p.CreatedAt, p.CompletedAt);
+
+    private void EnqueueOutboxMessage(Payment payment, string eventType)
+    {
+        var @event = new PaymentEvent(
+            EventId: Guid.NewGuid(),
+            PaymentId: payment.Id,
+            MerchantId: payment.MerchantId,
+            TenantId: payment.TenantId,
+            EventType: eventType,
+            Amount: payment.Amount,
+            Currency: payment.Currency,
+            ProviderTransactionId: payment.ProviderTransactionId,
+            FailureReason: payment.FailureReason,
+            Timestamp: DateTime.UtcNow);
+
+        _db.OutboxMessages.Add(new OutboxMessage
+        {
+            EventId = @event.EventId,
+            EventType = eventType,
+            Payload = JsonSerializer.Serialize(@event),
+            CreatedAt = DateTime.UtcNow,
+            TraceParent = Activity.Current?.Id
+        });
+    }
 
     private static bool IsDuplicateKeyException(DbUpdateException ex)
     {

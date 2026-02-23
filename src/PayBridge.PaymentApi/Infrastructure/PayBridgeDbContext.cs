@@ -9,9 +9,21 @@ public class PayBridgeDbContext : DbContext
         : base(options) { }
 
     public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<OutboxMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedOnAdd();
+            entity.Property(e => e.EventType).HasMaxLength(50);
+            entity.Property(e => e.Payload).HasColumnType("nvarchar(max)");
+            entity.Property(e => e.TraceParent).HasMaxLength(200);
+            entity.HasIndex(e => new { e.ProcessedAt, e.RetryCount })
+                .HasDatabaseName("IX_Outbox_Unprocessed");
+        });
+
         modelBuilder.Entity<Payment>(entity =>
         {
             entity.HasKey(e => e.Id);
