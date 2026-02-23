@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using PayBridge.Contracts.Models;
+using PayBridge.Logging;
 using PayBridge.PaymentApi.Services;
 
 namespace PayBridge.PaymentApi.Controllers;
@@ -9,12 +10,12 @@ namespace PayBridge.PaymentApi.Controllers;
 public class PaymentsController : ControllerBase
 {
     private readonly PaymentOrchestrator _orchestrator;
-    private readonly ILogger<PaymentsController> _logger;
+    private readonly IAppLogger _appLogger;
 
-    public PaymentsController(PaymentOrchestrator orchestrator, ILogger<PaymentsController> logger)
+    public PaymentsController(PaymentOrchestrator orchestrator, IAppLogger appLogger)
     {
         _orchestrator = orchestrator;
-        _logger = logger;
+        _appLogger = appLogger;
     }
 
     [HttpPost]
@@ -29,9 +30,9 @@ public class PaymentsController : ControllerBase
             return BadRequest(new { Error = "Invalid payment request" });
         }
 
-        _logger.LogInformation(
+        _appLogger.LogInformation(
             "Payment request received: MerchantId={MerchantId}, Amount={Amount} {Currency}",
-            request.MerchantId, request.Amount, request.Currency);
+            null, request.MerchantId, request.Amount, request.Currency);
 
         var result = await _orchestrator.ProcessPaymentAsync(request, ct);
         return Ok(result);

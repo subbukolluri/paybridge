@@ -17,6 +17,64 @@ services:
       retries: 10
       start_period: 30s
 
+  # ── Observability (Grafana Stack) ──────────────────────────────────────────
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    user: "0"
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      tempo:
+        condition: service_started
+
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+      prometheus:
+        condition: service_started
+
   # ── Application Services ────────────────────────────────────────────────────
 
   payment-api:
@@ -27,9 +85,37 @@ services:
       - "5000:8080"
     environment:
       - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=PayBridge;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True
+      - FraudService__Url=http://fraud-service:5001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+      - Loki__Url=http://loki:3100
     depends_on:
       sqlserver:
         condition: service_healthy
+      fraud-service:
+        condition: service_started
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+
+  fraud-service:
+    build:
+      context: .
+      dockerfile: src/PayBridge.FraudService/Dockerfile
+    ports:
+      - "5001:5001"
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+      - Loki__Url=http://loki:3100
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
 
 volumes:
   sqldata:
+  tempo-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

@@ -5,10 +5,13 @@ EXPOSE 8080
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
+COPY PayBridge.Logging/PayBridge.Logging.csproj PayBridge.Logging/
 COPY src/PayBridge.Contracts/PayBridge.Contracts.csproj src/PayBridge.Contracts/
 COPY src/PayBridge.PaymentApi/PayBridge.PaymentApi.csproj src/PayBridge.PaymentApi/
+COPY protos/ protos/
 RUN dotnet restore src/PayBridge.PaymentApi/PayBridge.PaymentApi.csproj
 
+COPY PayBridge.Logging/ PayBridge.Logging/
 COPY src/PayBridge.Contracts/ src/PayBridge.Contracts/
 COPY src/PayBridge.PaymentApi/ src/PayBridge.PaymentApi/
 RUN dotnet build src/PayBridge.PaymentApi/PayBridge.PaymentApi.csproj -c Release -o /app/build
